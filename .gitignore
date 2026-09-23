@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual Environment
+backend/venv/
+venv/
+.env
+
+backend/models/
+*.pt
+
+backend/alerts/
+*.log
+
+uploads/
+videos/
+*.mp4
+*.avi
+*.mov
+
+frontend/node_modules/
+
+# React Build
+frontend/dist/
+frontend/build/
+
+.vscode/
+
+.DS_Store
+Thumbs.db
