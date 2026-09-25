@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+﻿import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -32,7 +32,7 @@ import tailwindcss from "@tailwindcss/vite";
  * ============================================================
  */
 
-const BACKEND_URL = "http://127.0.0.1:3000";
+const BACKEND_URL = "http://16.184.9.123";
 
 const proxyTarget = {
   target: BACKEND_URL,

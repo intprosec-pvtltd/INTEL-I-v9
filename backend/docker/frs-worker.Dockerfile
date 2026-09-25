@@ -1,12 +1,51 @@
 ﻿FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
-ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    INTEL_I_PROCESS_ROLE=frs-worker \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
+
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip libgl1 libglib2.0-0 curl && rm -rf /var/lib/apt/lists/*
-RUN pip3 install --no-cache-dir fastapi==0.136.3 uvicorn==0.41.0 python-multipart==0.0.22 numpy==2.3.5 opencv-python-headless==4.10.0.84 onnxruntime-gpu==1.20.2 SQLAlchemy==2.0.50 psycopg2-binary==2.9.12 cryptography==48.0.0 python-dotenv==1.2.2 GeoAlchemy2==0.18.1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       software-properties-common \
+       ca-certificates \
+       curl \
+       libgl1 \
+       libglib2.0-0 \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       python3.11 \
+       python3.11-dev \
+       python3.11-venv \
+    && python3.11 -m venv /opt/venv \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip setuptools wheel
+
+RUN python -m pip install --no-cache-dir \
+    fastapi==0.136.3 \
+    uvicorn==0.41.0 \
+    python-multipart==0.0.22 \
+    numpy==2.3.5 \
+    opencv-python-headless==4.10.0.84 \
+    onnxruntime-gpu==1.20.2 \
+    SQLAlchemy==2.0.50 \
+    psycopg2-binary==2.9.12 \
+    cryptography==48.0.0 \
+    python-dotenv==1.2.2 \
+    GeoAlchemy2==0.18.1
+
 COPY . .
-RUN python3 -m compileall -q .
+
+RUN python -m compileall -q .
+
 USER 65532:65532
+
 EXPOSE 9202
-CMD ["python3", "-m", "workers.frs_worker"]
 
-
+CMD ["python", "-m", "workers.frs_worker"]

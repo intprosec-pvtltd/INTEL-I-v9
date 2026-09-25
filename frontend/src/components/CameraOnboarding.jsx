@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Camera, FileSpreadsheet, Link2, Network, Plus, RefreshCw, Search, Server, Upload } from "lucide-react";
 import toast from "react-hot-toast";
 
-import api, { WEBSOCKET_URL } from "../api/axios";
+import api from "../api/axios";
 import CameraIntegrationPanel from "./CameraIntegrationPanel";
 import LiveCam from "./LiveCam";
 import { getStoredUser } from "../auth/rbac";
@@ -52,7 +52,6 @@ const CameraOnboarding = () => {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
-  const socketRef = useRef(null);
 
   const loadJobs = useCallback(async () => {
     try { const { data } = await api.get("/api/camera-onboarding/jobs", { params: { limit: 10 } }); setJobs(data?.jobs || []); }
@@ -73,19 +72,51 @@ const CameraOnboarding = () => {
     loadFleet();
   }, [loadJobs, loadFleet]);
   useEffect(() => {
-    const socket = new WebSocket(WEBSOCKET_URL);
-    socketRef.current = socket;
-    socket.onmessage = (event) => {
+    // Camera onboarding progress is intentionally polled instead of opening
+    // another page-level WebSocket. The application already maintains live
+    // WebSocket connections for alerts/GIS, and this view only needs job/fleet
+    // state from the authoritative REST endpoints. Polling avoids duplicate
+    // sockets during React StrictMode remounts and prevents /ws 403/early-close
+    // errors without weakening backend WebSocket authentication.
+    let cancelled = false;
+
+    const refresh = async () => {
       try {
-        const message = JSON.parse(event.data);
-        if (message.type === "camera_onboarding_progress") {
-          setCurrentJob(message); loadJobs();
-          if (["completed", "requires_attention"].includes(String(message.status).toLowerCase())) loadFleet();
+        const { data } = await api.get("/api/camera-onboarding/jobs", { params: { limit: 10 } });
+        if (cancelled) return;
+
+        const nextJobs = data?.jobs || [];
+        setJobs(nextJobs);
+
+        const activeJob = nextJobs.find((job) =>
+          ["pending", "queued", "processing", "running", "validating"].includes(
+            String(job?.status || "").toLowerCase()
+          )
+        );
+        const latestJob = activeJob || nextJobs[0] || null;
+        setCurrentJob(latestJob);
+
+        if (
+          latestJob &&
+          ["completed", "requires_attention"].includes(
+            String(latestJob.status || "").toLowerCase()
+          )
+        ) {
+          await loadFleet();
         }
-      } catch { /* Ignore non-JSON heartbeat messages. */ }
+      } catch {
+        // Keep the existing page usable if onboarding progress is temporarily unavailable.
+      }
     };
-    return () => { socket.close(); socketRef.current = null; };
-  }, [loadFleet, loadJobs]);
+
+    void refresh();
+    const timer = window.setInterval(refresh, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [loadFleet]);
 
   const launch = async (request) => {
     setBusy(true);

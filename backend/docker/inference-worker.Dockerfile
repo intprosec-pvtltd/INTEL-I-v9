@@ -3,7 +3,8 @@
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    INTEL_I_PROCESS_ROLE=camera-worker \
+    INTEL_I_PROCESS_ROLE=inference-worker \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH"
 
@@ -27,7 +28,8 @@ RUN apt-get update \
     && python3.11 -m venv /opt/venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --upgrade pip setuptools wheel
+RUN python --version \
+    && python -m pip install --upgrade pip setuptools wheel
 
 COPY requirements.txt /tmp/all-requirements.txt
 
@@ -56,6 +58,6 @@ RUN python -m compileall -q .
 
 USER 65532:65532
 
-EXPOSE 9101
+EXPOSE 9300
 
-CMD ["python", "-m", "workers.camera_worker"]
+CMD ["python", "-m", "workers.inference_worker"]

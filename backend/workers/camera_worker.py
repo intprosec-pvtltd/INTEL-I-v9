@@ -33,7 +33,11 @@ from cache.cameraLease import (
     set_worker_heartbeat,
     list_worker_heartbeats,
 )
-from db.crud import get_camera_for_worker, get_requested_running_cameras
+from db.crud import (
+    get_camera_for_worker,
+    get_requested_running_cameras,
+    set_camera_desired_state,
+)
 from cache.redisState import get_camera_state, increment_camera_frame
 from db.database import SessionLocal
 from db.model import CameraAIProfile
@@ -384,14 +388,7 @@ class DistributedWorker:
                     timeout_seconds=legacy.RTSP_READ_TIMEOUT_SECONDS,
                 )
 
-            preview_state = {"processed_at": None}
-
-            def _publish_preview(frame, _item, *, processed=False):
-                # Keep boxes on the exact frame that produced them. Raw fallback
-                # resumes after a stalled AI service, rather than freezing forever.
-                last_processed = preview_state["processed_at"]
-                if not processed and last_processed is not None and time.monotonic() - last_processed < 3.0:
-                    return
+            def _publish_preview(frame, _item):
                 if frame is None: return
                 ok,encoded=cv2.imencode(".jpg",frame,[int(cv2.IMWRITE_JPEG_QUALITY),int(getattr(legacy,"STREAM_JPEG_QUALITY",85))])
                 if not ok: return
@@ -402,8 +399,8 @@ class DistributedWorker:
                 increment_camera_frame(cam_id)
 
             def _publish_processed(_frame, _item):
-                _publish_preview(_frame, _item, processed=True)
-                preview_state["processed_at"] = time.monotonic()
+                # Analytics completion telemetry only. Preview is intentionally
+                # independent and is emitted in the capture thread.
                 cam_id=str(camera.cam_id)
                 with legacy.state_lock:
                     legacy.cameraFrameCount[cam_id]=legacy.cameraFrameCount.get(cam_id,0)+1
@@ -504,18 +501,65 @@ class DistributedWorker:
 
     def _reconcile(self) -> None:
         with SessionLocal() as db:
-            requested = get_requested_running_cameras(db, limit=max(200, MAX_CAMERAS * 20))
-            requested_by_pk = {int(row.id): row for row in requested}
+            requested = get_requested_running_cameras(
+                db,
+                limit=max(200, MAX_CAMERAS * 20),
+            )
+            requested_by_pk = {
+                int(row.id): row
+                for row in requested
+            }
+            completed_finite_sources: set[int] = set()
 
-            # Stop cameras whose persistent intent changed or whose legacy
-            # worker exited unexpectedly.
+            # Uploaded/recorded media is finite. EOF is completion, not a
+            # reconnect condition. Persist STOPPED before releasing ownership
+            # so no worker immediately reclaims and restarts the file.
             for camera_pk, owned in list(self.owned.items()):
                 row = requested_by_pk.get(camera_pk)
                 if row is None:
-                    self._stop_owned(camera_pk, "DESIRED_STATE_STOPPED")
+                    self._stop_owned(
+                        camera_pk,
+                        "DESIRED_STATE_STOPPED",
+                    )
                     continue
-                if not owned.pipeline.status().get("running"):
-                    self._stop_owned(camera_pk, "PIPELINE_EXITED")
+
+                pipeline_status = owned.pipeline.status()
+                if pipeline_status.get("running"):
+                    continue
+
+                finite_completed = bool(
+                    str(owned.source_type or "").strip().lower()
+                    in {"upload", "recorded_video", "file"}
+                    and pipeline_status.get("eof_reached")
+                )
+
+                if finite_completed:
+                    try:
+                        set_camera_desired_state(
+                            db,
+                            row,
+                            "STOPPED",
+                            commit=True,
+                        )
+                    except Exception:
+                        db.rollback()
+                        logger.exception(
+                            "Failed to persist finite-source completion "
+                            "| camera_pk=%s cam_id=%s",
+                            camera_pk,
+                            owned.cam_id,
+                        )
+                    completed_finite_sources.add(int(camera_pk))
+                    self._stop_owned(
+                        camera_pk,
+                        "FINITE_SOURCE_EOF",
+                    )
+                    continue
+
+                self._stop_owned(
+                    camera_pk,
+                    "PIPELINE_EXITED",
+                )
 
             if len(self.owned) >= MAX_CAMERAS:
                 return
@@ -523,6 +567,8 @@ class DistributedWorker:
             for camera in requested:
                 if len(self.owned) >= MAX_CAMERAS:
                     break
+                if int(camera.id) in completed_finite_sources:
+                    continue
                 if int(camera.id) in self.owned:
                     continue
                 if INFERENCE_SETTINGS.worker_balancing_enabled:
